@@ -102,7 +102,11 @@ type spaceshipRecordUnion struct {
 	Selector        int    `json:"selector,omitempty"`
 	Matching        int    `json:"matching,omitempty"`
 	AliasName       string `json:"aliasName,omitempty"`
-	// TLSA/HTTPS-specific fields removed
+	// HTTPS/ServiceBinding fields (added from the other version)
+	SvcPriority int    `json:"svcPriority,omitempty"`
+	SvcTarget   string `json:"svcTarget,omitempty"`
+	TargetName  string `json:"targetName,omitempty"` // Alternative field name used by API
+	SvcParams   string `json:"svcParams,omitempty"`
 }
 
 // UnmarshalJSON implements custom unmarshalling to handle mixed-type 'port' fields and
@@ -175,5 +179,10 @@ func (s *spaceshipRecordUnion) UnmarshalJSON(data []byte) error {
 	unmarshal("selector", &s.Selector)
 	unmarshal("matching", &s.Matching)
 	unmarshal("aliasName", &s.AliasName)
+	// HTTPS fields
+	unmarshal("svcPriority", &s.SvcPriority)
+	unmarshal("svcTarget", &s.SvcTarget)
+	unmarshal("targetName", &s.TargetName)
+	unmarshal("svcParams", &s.SvcParams)
 	return nil
 }

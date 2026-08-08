@@ -33,14 +33,21 @@ func (p *Provider) getBaseURL() string {
 // doRequest performs an HTTP request to the Spaceship API and returns response body and status code
 func (p *Provider) doRequest(ctx context.Context, method, endpoint string, body interface{}) ([]byte, int, error) {
 	url := p.getBaseURL() + endpoint
+
+	// Log request details
+	p.logDebug("Request: %s %s", method, url)
+
 	var reqBody io.Reader
 	if body != nil {
 		jsonData, err := json.Marshal(body)
 		if err != nil {
+			p.logDebug("Failed to marshal body for debug: %v", err)
 			return nil, 0, fmt.Errorf("failed to marshal request body: %w", err)
 		}
+		p.logDebug("Request Body: %s", string(jsonData))
 		reqBody = bytes.NewBuffer(jsonData)
 	}
+
 	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create request: %w", err)
@@ -68,6 +75,12 @@ func (p *Provider) doRequest(ctx context.Context, method, endpoint string, body 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Log response details
+	p.logDebug("Response Status: %d", resp.StatusCode)
+	if len(respBody) > 0 {
+		p.logDebug("Response Body: %s", string(respBody))
 	}
 
 	if resp.StatusCode >= 400 {

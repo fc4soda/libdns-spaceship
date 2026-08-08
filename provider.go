@@ -12,10 +12,6 @@ import (
 	"github.com/libdns/libdns"
 )
 
-// convertToLibdnsRecord moved to conversions.go
-
-// convertFromLibdnsRecord moved to conversions.go
-
 // GetRecords lists all the records in the zone.
 func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
 	if p.APIKey == "" || p.APISecret == "" {
@@ -24,6 +20,8 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 
 	// Clean zone name
 	zone = strings.TrimSuffix(zone, ".")
+
+	p.logDebug("GetRecords: zone=%s", zone)
 
 	var records []libdns.Record
 	// API requires pagination parameters 'take' and 'skip'. We'll page through all records.
@@ -42,6 +40,7 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 		if err := json.Unmarshal(body, &lr); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal records response: %w", err)
 		}
+		p.logDebug("GetRecords: got %d items, total %d", len(lr.Items), lr.Total)
 		for _, sr := range lr.Items {
 			if record := p.toLibdnsRR(sr, zone); record != nil {
 				records = append(records, record)
@@ -53,6 +52,7 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 		skip += take
 	}
 
+	p.logInfo("GetRecords: retrieved %d records for zone %s", len(records), zone)
 	return records, nil
 }
 
@@ -64,6 +64,9 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 
 	// Clean zone name
 	zone = strings.TrimSuffix(zone, ".")
+
+	p.logInfo("AppendRecords: zone=%s, records count=%d", zone, len(records))
+	p.logDebug("AppendRecords: records=%+v", records)
 
 	var items []spaceshipRecordUnion
 	for _, r := range records {
@@ -77,6 +80,8 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 		"items": items,
 	}
 
+	p.logDebug("AppendRecords: payload=%+v", payload)
+
 	endpoint := fmt.Sprintf("/v1/dns/records/%s", zone)
 	_, status, err := p.doRequest(ctx, "PUT", endpoint, payload)
 	if err != nil {
@@ -85,6 +90,7 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 	if status != 204 {
 		// In case API returns body with created data we could parse it; but it should be 204
 		// Fall back to returning the input records
+		p.logInfo("AppendRecords: status %d (expected 204)", status)
 	}
 
 	// Return records converted from the request payload as the representation of what was created
@@ -94,6 +100,7 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 			added = append(added, record)
 		}
 	}
+	p.logInfo("AppendRecords: successfully added %d records", len(added))
 	return added, nil
 }
 
@@ -104,6 +111,9 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 	}
 
 	zone = strings.TrimSuffix(zone, ".")
+	p.logInfo("SetRecords: zone=%s, records count=%d", zone, len(records))
+	p.logDebug("SetRecords: records=%+v", records)
+
 	var items []spaceshipRecordUnion
 	for _, r := range records {
 		if item := p.fromLibdnsRR(r, zone); item != nil {
@@ -114,18 +124,21 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 		"force": true,
 		"items": items,
 	}
+	p.logDebug("SetRecords: payload=%+v", payload)
+
 	endpoint := fmt.Sprintf("/v1/dns/records/%s", zone)
 	_, status, err := p.doRequest(ctx, "PUT", endpoint, payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set records: %w", err)
 	}
 	if status != 204 {
-		// API should return 204. If not, still return input records as best-effort.
+		p.logInfo("SetRecords: status %d (expected 204)", status)
 	}
 	var updated []libdns.Record
 	for _, it := range items {
 		updated = append(updated, p.toLibdnsRR(it, zone))
 	}
+	p.logInfo("SetRecords: updated %d records", len(updated))
 	return updated, nil
 }
 
@@ -136,6 +149,9 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 	}
 
 	zone = strings.TrimSuffix(zone, ".")
+	p.logInfo("DeleteRecords: zone=%s, records count=%d", zone, len(records))
+	p.logDebug("DeleteRecords: records=%+v", records)
+
 	var items []spaceshipRecordUnion
 	for _, rec := range records {
 		item := p.fromLibdnsRR(rec, zone)
@@ -145,17 +161,19 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 		}
 		items = append(items, *item)
 	}
+	p.logDebug("DeleteRecords: items to delete=%+v", items)
+
 	endpoint := fmt.Sprintf("/v1/dns/records/%s", zone)
 	_, status, err := p.doRequest(ctx, "DELETE", endpoint, items)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete records: %w", err)
 	}
 	if status != 204 {
-		// API should return 204. If not, proceed anyway.
+		p.logInfo("DeleteRecords: status %d (expected 204)", status)
 	}
+	p.logInfo("DeleteRecords: deleted %d records", len(records))
 	return records, nil
 }
-
 
 // Interface guards
 var (

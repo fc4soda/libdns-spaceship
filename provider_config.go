@@ -1,10 +1,27 @@
 package libdnsspaceship
 
 import (
+	"fmt" // 新增导入，用于格式化日志消息
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
+)
+
+// LogLevel defines the verbosity level of logging.
+type LogLevel int
+
+const (
+	// LogLevelSilent disables all logging (default).
+	LogLevelSilent LogLevel = iota
+	// LogLevelError logs only errors.
+	LogLevelError
+	// LogLevelInfo logs errors and informational messages.
+	LogLevelInfo
+	// LogLevelDebug logs everything including detailed debug traces.
+	LogLevelDebug
 )
 
 // Provider facilitates DNS record manipulation with Spaceship.
@@ -23,6 +40,73 @@ type Provider struct {
 
 	// PageSize controls pagination size used by GetRecords (defaults to 100)
 	PageSize int `json:"page_size,omitempty"`
+
+	// internal logger and log level
+	logger   *slog.Logger
+	logLevel LogLevel
+}
+
+// SetLogLevel sets the logging level. Available levels:
+//   - LogLevelSilent: no output (default)
+//   - LogLevelError: only errors
+//   - LogLevelInfo: errors + informational messages
+//   - LogLevelDebug: everything + detailed debug traces
+func (p *Provider) SetLogLevel(level LogLevel) {
+	p.logLevel = level
+	p.logger = p.newLogger(level)
+}
+
+// newLogger creates a slog.Logger with the given level.
+func (p *Provider) newLogger(level LogLevel) *slog.Logger {
+	if level == LogLevelSilent {
+		return slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	var slogLevel slog.Level
+	switch level {
+	case LogLevelDebug:
+		slogLevel = slog.LevelDebug
+	case LogLevelInfo:
+		slogLevel = slog.LevelInfo
+	case LogLevelError:
+		slogLevel = slog.LevelError
+	default:
+		slogLevel = slog.LevelInfo + 1 // 高于 Error，实际不输出
+	}
+	opts := &slog.HandlerOptions{Level: slogLevel}
+	handler := slog.NewTextHandler(os.Stdout, opts)
+	return slog.New(handler)
+}
+
+// internal logging helpers
+// 修改：使用 fmt.Sprintf 将格式化参数拼接成完整字符串，再传给 slog，避免键值对解析错误。
+func (p *Provider) logDebug(format string, args ...any) {
+	if p.logger != nil && p.logLevel >= LogLevelDebug {
+		msg := format
+		if len(args) > 0 {
+			msg = fmt.Sprintf(format, args...)
+		}
+		p.logger.Debug(msg)
+	}
+}
+
+func (p *Provider) logInfo(format string, args ...any) {
+	if p.logger != nil && p.logLevel >= LogLevelInfo {
+		msg := format
+		if len(args) > 0 {
+			msg = fmt.Sprintf(format, args...)
+		}
+		p.logger.Info(msg)
+	}
+}
+
+func (p *Provider) logError(format string, args ...any) {
+	if p.logger != nil && p.logLevel >= LogLevelError {
+		msg := format
+		if len(args) > 0 {
+			msg = fmt.Sprintf(format, args...)
+		}
+		p.logger.Error(msg)
+	}
 }
 
 // listResponse models the GET /v1/dns/records/{domain} response
@@ -41,6 +125,9 @@ type listResponse struct {
 func NewProviderFromEnv() *Provider {
 	p := &Provider{}
 	p.PopulateFromEnv()
+	// Initialize with silent level
+	p.logger = p.newLogger(LogLevelSilent)
+	p.logLevel = LogLevelSilent
 	return p
 }
 

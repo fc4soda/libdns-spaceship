@@ -48,28 +48,33 @@ func TestProvider_ConvertToLibdnsRecord(t *testing.T) {
 	}{
 		{
 			name:     "A record",
-			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: fmt.Sprintf("test.%s", zone), Type: "A", TTL: 300}, Address: "192.0.2.1"},
+			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: "test", Type: "A", TTL: 300}, Address: "192.0.2.1"},
 			expected: "libdns.Address",
 		},
 		{
 			name:     "TXT record",
-			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: fmt.Sprintf("test.%s", zone), Type: "TXT", TTL: 300}, Value: "v=spf1 include:_spf." + zone + " ~all"},
+			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: "test", Type: "TXT", TTL: 300}, Value: "v=spf1 include:_spf." + zone + " ~all"},
 			expected: "libdns.TXT",
 		},
 		{
 			name:     "CNAME record",
-			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: fmt.Sprintf("www.%s", zone), Type: "CNAME", TTL: 300}, Cname: zone},
+			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: "www", Type: "CNAME", TTL: 300}, Cname: zone},
 			expected: "libdns.CNAME",
 		},
 		{
 			name:     "MX record",
-			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: zone, Type: "MX", TTL: 300}, Exchange: fmt.Sprintf("mail.%s", zone), Preference: 10},
+			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: zone, Type: "MX", TTL: 300}, Exchange: "mail", Preference: 10},
 			expected: "libdns.MX",
 		},
 		{
 			name:     "SRV record",
-			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: fmt.Sprintf("_sip._tcp.%s", zone), Type: "SRV", TTL: 3600}, Priority: 10, Weight: 20, PortInt: 5060, Port: "5060", Target: fmt.Sprintf("sip.%s", zone)},
+			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: "_sip._tcp", Type: "SRV", TTL: 3600}, Priority: 10, Weight: 20, PortInt: 5060, Port: "5060", Target: "sip"},
 			expected: "libdns.SRV",
+		},
+		{
+			name:     "HTTPS record",
+			input:    spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Name: "test", Type: "HTTPS", TTL: 300}, SvcPriority: 1, TargetName: "target", SvcParams: "alpn=h2,h3"},
+			expected: "libdns.ServiceBinding",
 		},
 	}
 
@@ -101,6 +106,10 @@ func TestProvider_ConvertToLibdnsRecord(t *testing.T) {
 				if _, ok := result.(libdns.SRV); !ok {
 					t.Errorf("Expected libdns.SRV, got %T", result)
 				}
+			case "libdns.ServiceBinding":
+				if _, ok := result.(libdns.ServiceBinding); !ok {
+					t.Errorf("Expected libdns.ServiceBinding, got %T", result)
+				}
 			}
 
 			// Verify the record has the correct name (should have zone stripped)
@@ -113,6 +122,15 @@ func TestProvider_ConvertToLibdnsRecord(t *testing.T) {
 				} else {
 					t.Errorf("expected libdns.SRV but result is %T", result)
 				}
+			} else if tt.expected == "libdns.ServiceBinding" {
+				if s, ok := result.(libdns.ServiceBinding); ok {
+					expected := "test"
+					if s.Name != expected {
+						t.Errorf("Expected ServiceBinding name %q, got %q", expected, s.Name)
+					}
+				} else {
+					t.Errorf("expected libdns.ServiceBinding but result is %T", result)
+				}
 			} else {
 				rr := result.RR()
 				expectedNames := map[string]string{
@@ -120,7 +138,8 @@ func TestProvider_ConvertToLibdnsRecord(t *testing.T) {
 					"TXT record":   "test",
 					"CNAME record": "www",
 					"MX record":    "",
-					// SRV is handled above
+					"HTTPS record": "test",
+					// SRV and ServiceBinding are handled above
 				}
 				if expectedName := expectedNames[tt.name]; rr.Name != expectedName {
 					t.Errorf("Expected name %q, got %q", expectedName, rr.Name)
@@ -142,8 +161,8 @@ func TestProvider_ConvertFromLibdnsRecord(t *testing.T) {
 	}
 
 	result := provider.fromLibdnsRR(addr, zone)
-	if result.Name != fmt.Sprintf("test.%s", zone) {
-		t.Errorf("Expected full name, got %s", result.Name)
+	if result.Name != "test" {
+		t.Errorf("Expected relative name, got %s", result.Name)
 	}
 	if result.Type != "A" {
 		t.Errorf("Expected type A, got %s", result.Type)
@@ -153,6 +172,68 @@ func TestProvider_ConvertFromLibdnsRecord(t *testing.T) {
 	}
 	if result.TTL != 300 {
 		t.Errorf("Expected TTL 300, got %d", result.TTL)
+	}
+}
+
+func TestProvider_ConvertFromGenericRR(t *testing.T) {
+	provider := NewProviderFromEnv()
+	zone := getTestZone()
+
+	result := provider.fromLibdnsRR(libdns.RR{
+		Name: "_acme-challenge",
+		TTL:  60 * time.Second,
+		Type: "TXT",
+		Data: "token-value",
+	}, zone)
+	if result == nil {
+		t.Fatal("expected generic RR to be converted")
+	}
+	if result.Name != "_acme-challenge" {
+		t.Fatalf("expected relative name, got %q", result.Name)
+	}
+	if result.Type != "TXT" {
+		t.Fatalf("expected TXT type, got %q", result.Type)
+	}
+	if result.Value != "token-value" {
+		t.Fatalf("expected TXT value, got %q", result.Value)
+	}
+	if result.TTL != 60 {
+		t.Fatalf("expected TTL 60, got %d", result.TTL)
+	}
+}
+
+func TestAppendRecords_GenericRRPayload(t *testing.T) {
+	provider := newTestProvider()
+	zone := getTestZone()
+
+	provider.HTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			var payload struct {
+				Force bool                   `json:"force"`
+				Items []spaceshipRecordUnion `json:"items"`
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("unmarshal payload: %v\nbody=%s", err, string(body))
+			}
+			if len(payload.Items) != 1 {
+				t.Fatalf("expected one item, got %d in %s", len(payload.Items), string(body))
+			}
+			if payload.Items[0].Type != "TXT" || payload.Items[0].Name != "_acme-challenge" || payload.Items[0].Value != "token-value" {
+				t.Fatalf("unexpected item payload: %#v", payload.Items[0])
+			}
+			return &http.Response{StatusCode: 204, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}),
+	}
+
+	_, err := provider.AppendRecords(context.Background(), zone, []libdns.Record{
+		libdns.RR{Name: "_acme-challenge", TTL: 60 * time.Second, Type: "TXT", Data: "token-value"},
+	})
+	if err != nil {
+		t.Fatalf("AppendRecords failed: %v", err)
 	}
 }
 
@@ -265,21 +346,123 @@ func TestConvertToLibdnsRecord_ExtendedTypes(t *testing.T) {
 		t.Fatalf("unexpected CAA conversion type: %T", rr)
 	}
 
+	// HTTPS
+	https := spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Type: "HTTPS", Name: fmt.Sprintf("test.%s", zone), TTL: 300}, SvcPriority: 1, TargetName: fmt.Sprintf("target.%s", zone), SvcParams: "alpn=h2,h3 port=8443"}
+	rr = provider.toLibdnsRR(https, zone)
+	if r, ok := rr.(libdns.ServiceBinding); ok {
+		if r.Scheme != "https" {
+			t.Fatalf("unexpected HTTPS scheme: expected 'https', got %q", r.Scheme)
+		}
+		if r.Priority != 1 {
+			t.Fatalf("unexpected HTTPS priority: expected 1, got %d", r.Priority)
+		}
+		if r.Target != fmt.Sprintf("target.%s", zone) {
+			t.Fatalf("unexpected HTTPS target: expected %q, got %q", fmt.Sprintf("target.%s", zone), r.Target)
+		}
+		paramsStr := r.Params.String()
+		if !strings.Contains(paramsStr, "alpn=h2,h3") || !strings.Contains(paramsStr, "port=8443") {
+			t.Fatalf("unexpected HTTPS params: expected to contain 'alpn=h2,h3' and 'port=8443', got %q", paramsStr)
+		}
+		if r.Name != "test" {
+			t.Fatalf("unexpected HTTPS name: expected 'test', got %q", r.Name)
+		}
+	} else {
+		t.Fatalf("unexpected HTTPS conversion type: expected libdns.ServiceBinding, got %T", rr)
+	}
+
+	// HTTPS with empty params
+	httpsEmpty := spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Type: "HTTPS", Name: fmt.Sprintf("empty.%s", zone), TTL: 300}, SvcPriority: 0, TargetName: fmt.Sprintf("alt.%s", zone), SvcParams: ""}
+	rr = provider.toLibdnsRR(httpsEmpty, zone)
+	if r, ok := rr.(libdns.ServiceBinding); ok {
+		if r.Priority != 0 || r.Target != fmt.Sprintf("alt.%s", zone) || len(r.Params) != 0 {
+			t.Fatalf("unexpected HTTPS empty params conversion: %#v", r)
+		}
+	} else {
+		t.Fatalf("unexpected HTTPS empty params conversion type: expected libdns.ServiceBinding, got %T", rr)
+	}
+
+	// HTTPS with invalid params (should still work but have empty params)
+	httpsInvalid := spaceshipRecordUnion{ResourceRecordBase: ResourceRecordBase{Type: "HTTPS", Name: fmt.Sprintf("invalid.%s", zone), TTL: 300}, SvcPriority: 2, TargetName: fmt.Sprintf("bad.%s", zone), SvcParams: "invalid=params=format"}
+	rr = provider.toLibdnsRR(httpsInvalid, zone)
+	if r, ok := rr.(libdns.ServiceBinding); ok {
+		if r.Priority != 2 || r.Target != fmt.Sprintf("bad.%s", zone) {
+			t.Fatalf("unexpected HTTPS invalid params conversion: %#v", r)
+		}
+		// params might be empty or partially parsed - either is acceptable
+	} else {
+		t.Fatalf("unexpected HTTPS invalid params conversion type: expected libdns.ServiceBinding, got %T", rr)
+	}
+
 	// TLSA/HTTPS tests removed — provider no longer supports those types
 }
 
-func TestConvertFromLibdnsRecord_ParseRRData(t *testing.T) {
+func TestConvertFromLibdnsRecord_TypedRecords(t *testing.T) {
 	provider := NewProviderFromEnv()
 	zone := getTestZone()
 
-	// SRV
-	rr := libdns.RR{Name: "_sip._tcp", TTL: 3600 * time.Second, Type: "SRV", Data: fmt.Sprintf("10 20 5060 %s", fmt.Sprintf("sip.%s", zone))}
-	rec := provider.fromLibdnsRR(rr, zone)
+	// SRV (using typed libdns.SRV)
+	srv := libdns.SRV{Name: "_sip._tcp", TTL: 3600 * time.Second, Service: "sip", Transport: "tcp", Priority: 10, Weight: 20, Port: 5060, Target: fmt.Sprintf("sip.%s", zone)}
+	rec := provider.fromLibdnsRR(srv, zone)
+	if rec == nil {
+		t.Fatalf("SRV conversion should not return nil")
+	}
 	if rec.Priority != 10 || rec.Weight != 20 || rec.PortInt != 5060 || rec.Target != fmt.Sprintf("sip.%s", zone) {
-		t.Fatalf("SRV parsing failed: %#v", rec)
+		t.Fatalf("SRV conversion failed: %#v", rec)
 	}
 
-	// TLSA/HTTPS parsing tests removed — provider no longer supports these types
+	// Generic RR values should be parsed into their typed representations.
+	textualRR := libdns.RR{Name: "_sip._tcp", TTL: 3600 * time.Second, Type: "SRV", Data: fmt.Sprintf("10 20 5060 %s", fmt.Sprintf("sip.%s", zone))}
+	textualRec := provider.fromLibdnsRR(textualRR, zone)
+	if textualRec == nil {
+		t.Fatal("generic SRV RR should be converted")
+	}
+	if textualRec.Priority != 10 || textualRec.Weight != 20 || textualRec.PortInt != 5060 || textualRec.Target != fmt.Sprintf("sip.%s", zone) {
+		t.Fatalf("generic SRV conversion failed: %#v", textualRec)
+	}
+
+	// HTTPS (using typed libdns.ServiceBinding with https scheme)
+	https := libdns.ServiceBinding{
+		Name:     "test",
+		TTL:      300 * time.Second,
+		Scheme:   "https",
+		Priority: 1,
+		Target:   fmt.Sprintf("target.%s", zone),
+		Params:   map[string][]string{"alpn": {"h2", "h3"}, "port": {"8443"}},
+	}
+	httpsRec := provider.fromLibdnsRR(https, zone)
+	if httpsRec == nil {
+		t.Fatalf("HTTPS conversion should not return nil")
+	}
+	if httpsRec.Type != "HTTPS" {
+		t.Fatalf("Expected HTTPS type, got %s", httpsRec.Type)
+	}
+	if httpsRec.SvcPriority != 1 {
+		t.Fatalf("Expected priority 1, got %d", httpsRec.SvcPriority)
+	}
+	if httpsRec.TargetName != fmt.Sprintf("target.%s", zone) {
+		t.Fatalf("Expected target %s, got %s", fmt.Sprintf("target.%s", zone), httpsRec.TargetName)
+	}
+	if !strings.Contains(httpsRec.SvcParams, "alpn=h2,h3") || !strings.Contains(httpsRec.SvcParams, "port=8443") {
+		t.Fatalf("Expected params to contain alpn and port, got: %s", httpsRec.SvcParams)
+	}
+	expectedName := "test"
+	if httpsRec.Name != expectedName {
+		t.Fatalf("Expected name %s, got %s", expectedName, httpsRec.Name)
+	}
+
+	// Non-HTTPS ServiceBinding (should return nil)
+	svcb := libdns.ServiceBinding{
+		Name:     "test",
+		TTL:      300 * time.Second,
+		Scheme:   "svcb",
+		Priority: 1,
+		Target:   fmt.Sprintf("target.%s", zone),
+		Params:   map[string][]string{"alpn": {"h2"}},
+	}
+	svcbRec := provider.fromLibdnsRR(svcb, zone)
+	if svcbRec != nil {
+		t.Fatalf("Non-HTTPS ServiceBinding should return nil (unsupported), got: %#v", svcbRec)
+	}
 }
 
 func TestRoundTrip_CreateListDelete(t *testing.T) {
@@ -521,18 +704,17 @@ func TestLive_AddA_CNAME_SRV(t *testing.T) {
 	uid := time.Now().UnixNano() % 1000000
 	aName := fmt.Sprintf("libdns-a-%d", uid)
 	cName := fmt.Sprintf("libdns-cname-%d", uid)
-	srvName := fmt.Sprintf("_svc._tcp.libdns-%d", uid)
 
 	// A record
 	aRec := libdns.Address{Name: aName, TTL: 60 * time.Second, IP: netip.MustParseAddr("203.0.113.10")}
 	// CNAME pointing to the A record's FQDN
 	cRec := libdns.CNAME{Name: cName, TTL: 60 * time.Second, Target: fmt.Sprintf("%s.%s", aName, zone)}
 	// SRV using the A record target
-	srvRR := libdns.RR{Name: srvName, TTL: 60 * time.Second, Type: "SRV", Data: fmt.Sprintf("10 20 5060 %s.%s", aName, zone)}
+	srvRec := libdns.SRV{Name: fmt.Sprintf("libdns-%d", uid), TTL: 60 * time.Second, Service: "svc", Transport: "tcp", Priority: 10, Weight: 20, Port: 5060, Target: fmt.Sprintf("%s.%s", aName, zone)}
 
 	defer func() {
 		// best-effort cleanup
-		_, _ = provider.DeleteRecords(ctx, zone, []libdns.Record{aRec, cRec, srvRR})
+		_, _ = provider.DeleteRecords(ctx, zone, []libdns.Record{aRec, cRec, srvRec})
 	}()
 
 	// Append A and CNAME
@@ -541,7 +723,7 @@ func TestLive_AddA_CNAME_SRV(t *testing.T) {
 	}
 
 	// Append SRV
-	if _, err := provider.AppendRecords(ctx, zone, []libdns.Record{srvRR}); err != nil {
+	if _, err := provider.AppendRecords(ctx, zone, []libdns.Record{srvRec}); err != nil {
 		t.Fatalf("AppendRecords (SRV) failed: %v", err)
 	}
 
@@ -550,6 +732,8 @@ func TestLive_AddA_CNAME_SRV(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRecords failed: %v", err)
 	}
+
+	expectedSrvName := fmt.Sprintf("_svc._tcp.libdns-%d", uid)
 
 	foundA, foundCNAME, foundSRV := false, false, false
 	for _, r := range recs {
@@ -563,7 +747,7 @@ func TestLive_AddA_CNAME_SRV(t *testing.T) {
 				foundCNAME = true
 			}
 		case libdns.SRV:
-			if tr.Name == srvName {
+			if tr.Name == expectedSrvName {
 				if tr.Target == fmt.Sprintf("%s.%s", aName, zone) && tr.Port == 5060 {
 					foundSRV = true
 				}
@@ -768,7 +952,7 @@ func TestLive_ListAllAndCleanup(t *testing.T) {
 	ctx := context.Background()
 
 	t.Logf("=== LISTING ALL RECORDS IN ZONE: %s ===", zone)
-	
+
 	// Get all records
 	records, err := provider.GetRecords(ctx, zone)
 	if err != nil {
@@ -788,7 +972,7 @@ func TestLive_ListAllAndCleanup(t *testing.T) {
 	}
 
 	t.Logf("Found %d total records across %d types:", len(records), len(recordsByType))
-	
+
 	// Display all records grouped by type
 	for recordType, recs := range recordsByType {
 		t.Logf("\n--- %s Records (%d) ---", recordType, len(recs))
@@ -816,11 +1000,11 @@ func TestLive_ListAllAndCleanup(t *testing.T) {
 	}
 
 	t.Logf("\n=== DELETING ALL %d RECORDS ===", len(records))
-	
+
 	// Separate supported and unsupported records
 	var supportedRecords []libdns.Record
 	var unsupportedCount int
-	
+
 	for _, r := range records {
 		rr := r.RR()
 		if isSupportedForDeletion(rr.Type) {
@@ -847,7 +1031,7 @@ func TestLive_ListAllAndCleanup(t *testing.T) {
 	}
 
 	t.Logf("Successfully deleted %d records", len(deleted))
-	
+
 	// Verify deletion by listing again
 	remaining, err := provider.GetRecords(ctx, zone)
 	if err != nil {
@@ -868,7 +1052,7 @@ func TestLive_ListAllAndCleanup(t *testing.T) {
 // Helper function to check if a record type can be deleted by this provider
 func isSupportedForDeletion(recordType string) bool {
 	switch strings.ToUpper(recordType) {
-	case "A", "AAAA", "TXT", "CNAME", "MX", "SRV", "NS", "CAA":
+	case "A", "AAAA", "TXT", "CNAME", "MX", "SRV", "NS", "CAA", "HTTPS":
 		return true
 	default:
 		return false
@@ -895,10 +1079,11 @@ func TestLive_MoreTypes(t *testing.T) {
 	aaaa := libdns.Address{Name: fmt.Sprintf("aaaa-%s", sub), TTL: 60 * time.Second, IP: netip.MustParseAddr("2001:db8::1")}
 	mx := libdns.MX{Name: fmt.Sprintf("mx-%s", sub), TTL: 60 * time.Second, Target: fmt.Sprintf("mail.%s.%s", sub, zone), Preference: 10}
 	txt := libdns.TXT{Name: fmt.Sprintf("txt-%s", sub), TTL: 60 * time.Second, Text: "live-test"}
-	ns := libdns.RR{Name: fmt.Sprintf("ns-%s", sub), TTL: 60 * time.Second, Type: "NS", Data: fmt.Sprintf("ns1.%s.%s", sub, zone)}
+	ns := libdns.NS{Name: fmt.Sprintf("ns-%s", sub), TTL: 60 * time.Second, Target: fmt.Sprintf("ns1.%s.%s", sub, zone)}
+	https := libdns.ServiceBinding{Name: fmt.Sprintf("https-%s", sub), TTL: 60 * time.Second, Scheme: "https", Priority: 1, Target: fmt.Sprintf("target.%s.%s", sub, zone), Params: map[string][]string{"alpn": {"h2", "h3"}, "port": {"443"}}}
 
 	// Bundle records for easier cleanup
-	all := []libdns.Record{aaaa, mx, txt, ns}
+	all := []libdns.Record{aaaa, mx, txt, ns, https}
 
 	// Ensure cleanup even if the test fails
 	defer func() {
@@ -939,10 +1124,14 @@ func TestLive_MoreTypes(t *testing.T) {
 			if tr.Name == fmt.Sprintf("ns-%s", sub) && tr.Target == fmt.Sprintf("ns1.%s.%s", sub, zone) {
 				found["ns"] = true
 			}
+		case libdns.ServiceBinding:
+			if tr.Name == fmt.Sprintf("https-%s", sub) && tr.Scheme == "https" && tr.Target == fmt.Sprintf("target.%s.%s", sub, zone) && tr.Priority == 1 {
+				found["https"] = true
+			}
 		}
 	}
 
-	for _, typ := range []string{"aaaa", "mx", "txt", "ns"} {
+	for _, typ := range []string{"aaaa", "mx", "txt", "ns", "https"} {
 		if !found[typ] {
 			t.Fatalf("expected %s record to be present, but it was not found", typ)
 		}
